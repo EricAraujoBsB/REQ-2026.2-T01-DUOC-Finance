@@ -13,7 +13,6 @@ import {
   StatusRvt,
   TipoEventoRvt,
 } from '../generated/prisma/client.js';
-import type { ReadStream } from 'node:fs';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { CriarRvtDto } from './dto/criar-rvt.dto.js';
 import type { DeliberarRvtDto } from './dto/deliberar-rvt.dto.js';
@@ -105,7 +104,7 @@ export interface LeitorEvidencia {
 }
 
 export interface ArquivoEvidencia {
-  conteudo: ReadStream;
+  conteudo: Buffer;
   mimeType: string;
   nomeOriginal: string;
 }

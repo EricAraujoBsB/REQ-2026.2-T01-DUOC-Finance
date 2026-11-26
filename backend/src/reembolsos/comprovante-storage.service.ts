@@ -1,44 +1,50 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { createReadStream, type ReadStream } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
 import type { TipoEvidencia } from '../rvt/evidencias/arquivo-evidencia.util.js';
+import { nomeBucket, obterClienteSupabase } from '../storage/supabase-storage.js';
 
-/** Storage privado local para desenvolvimento; em produção substituir por armazenamento persistente. */
+/** Comprovantes de reembolso no bucket privado do Supabase Storage. */
 @Injectable()
 export class ComprovanteStorageService {
-  private readonly raiz = resolve(process.env.UPLOAD_DIR ?? 'uploads');
-
   async salvar(reembolsoId: string, buffer: Buffer, tipo: TipoEvidencia) {
-    const chave = join('reembolsos', reembolsoId, `${randomUUID()}.${tipo.extensao}`);
-    const destino = join(this.raiz, chave);
-    await mkdir(join(this.raiz, 'reembolsos', reembolsoId), { recursive: true });
-    await writeFile(destino, buffer, { flag: 'wx', mode: 0o640 });
+    // Chave gerada exclusivamente pelo servidor, nunca pelo usuário.
+    const chave = `reembolsos/${reembolsoId}/${randomUUID()}.${tipo.extensao}`;
+    const { error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .upload(chave, buffer, { contentType: tipo.mimeType, upsert: false });
+    if (error) {
+      throw new InternalServerErrorException(
+        `Falha ao gravar comprovante: ${error.message}`,
+      );
+    }
     return {
       chave,
       hashSha256: createHash('sha256').update(buffer).digest('hex'),
     };
   }
 
-  async abrir(chave: string): Promise<ReadStream> {
-    const destino = resolve(this.raiz, chave);
-    if (!destino.startsWith(this.raiz + sep)) {
+  async abrir(chave: string): Promise<Buffer> {
+    const { data, error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .download(chave);
+    if (error || !data) {
       throw new NotFoundException('Comprovante não encontrado.');
     }
-    try {
-      const arquivo = await stat(destino);
-      if (!arquivo.isFile()) throw new Error('Não é arquivo.');
-    } catch {
-      throw new NotFoundException('Comprovante não encontrado.');
-    }
-    return createReadStream(destino);
+    return Buffer.from(await data.arrayBuffer());
   }
 
   async remover(chave: string): Promise<void> {
-    // Chave gerada exclusivamente pelo servidor, nunca pelo usuário.
-    await unlink(join(this.raiz, chave)).catch((erro: unknown) => {
-      if ((erro as NodeJS.ErrnoException).code !== 'ENOENT') throw erro;
-    });
+    const { error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .remove([chave]);
+    if (error) {
+      throw new InternalServerErrorException(
+        `Falha ao remover comprovante: ${error.message}`,
+      );
+    }
   }
 }

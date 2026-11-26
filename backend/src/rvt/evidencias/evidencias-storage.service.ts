@@ -1,70 +1,65 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InternalServerErrorException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, type ReadStream } from 'node:fs';
-import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { nomeBucket, obterClienteSupabase } from '../../storage/supabase-storage.js';
 import type { TipoEvidencia } from './arquivo-evidencia.util.js';
 
 export interface ArquivoArmazenado {
-  /** Caminho relativo ao diretório de uploads (o que vai para o banco) */
+  /** Chave do objeto no bucket (o que vai para o banco) */
   caminhoRelativo: string;
   hashSha256: string;
 }
 
 /**
- * Persistência das evidências em disco, fora da pasta pública e com nome
- * gerado pelo servidor. Diretório configurável por UPLOAD_DIR.
+ * Persistência das evidências no bucket privado do Supabase Storage, com
+ * nome gerado pelo servidor. Bucket configurável por SUPABASE_STORAGE_BUCKET.
  */
 @Injectable()
 export class EvidenciasStorageService {
   private readonly logger = new Logger(EvidenciasStorageService.name);
-  private readonly raiz = resolve(process.env.UPLOAD_DIR ?? 'uploads');
 
   async salvar(
     rvtId: string,
     conteudo: Buffer,
     tipo: TipoEvidencia,
   ): Promise<ArquivoArmazenado> {
-    const caminhoRelativo = join(
-      'rvt',
-      rvtId,
-      `${randomUUID()}.${tipo.extensao}`,
-    );
-    const destino = join(this.raiz, caminhoRelativo);
-
-    await mkdir(join(this.raiz, 'rvt', rvtId), { recursive: true });
-    // flag "wx": nunca sobrescreve um arquivo existente
-    await writeFile(destino, conteudo, { flag: 'wx', mode: 0o640 });
-
+    const caminhoRelativo = `rvt/${rvtId}/${randomUUID()}.${tipo.extensao}`;
+    const { error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .upload(caminhoRelativo, conteudo, {
+        contentType: tipo.mimeType,
+        upsert: false,
+      });
+    if (error) {
+      throw new InternalServerErrorException(
+        `Falha ao gravar evidência: ${error.message}`,
+      );
+    }
     return {
       caminhoRelativo,
       hashSha256: createHash('sha256').update(conteudo).digest('hex'),
     };
   }
 
-  /** Abre a evidência para leitura; 404 se o arquivo sumiu do disco */
-  async abrir(caminhoRelativo: string): Promise<ReadStream> {
-    const caminho = resolve(this.raiz, caminhoRelativo);
-    // Defesa extra: o caminho vem do banco, mas nunca sai da raiz de uploads
-    if (!caminho.startsWith(this.raiz + sep)) {
-      throw new NotFoundException('Evidência não encontrada.');
-    }
-    try {
-      const info = await stat(caminho);
-      if (!info.isFile()) throw new Error('não é arquivo');
-    } catch {
-      this.logger.warn(`Evidência ausente no disco: ${caminhoRelativo}`);
+  /** Lê a evidência; 404 se o objeto não existir no bucket */
+  async abrir(caminhoRelativo: string): Promise<Buffer> {
+    const { data, error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .download(caminhoRelativo);
+    if (error || !data) {
+      this.logger.warn(`Evidência ausente no storage: ${caminhoRelativo}`);
       throw new NotFoundException('Arquivo da evidência não encontrado.');
     }
-    return createReadStream(caminho);
+    return Buffer.from(await data.arrayBuffer());
   }
 
   async remover(caminhoRelativo: string): Promise<void> {
-    try {
-      await unlink(join(this.raiz, caminhoRelativo));
-    } catch (erro) {
+    const { error } = await obterClienteSupabase()
+      .storage.from(nomeBucket())
+      .remove([caminhoRelativo]);
+    if (error) {
       this.logger.warn(
-        `Não foi possível remover a evidência ${caminhoRelativo}: ${String(erro)}`,
+        `Não foi possível remover a evidência ${caminhoRelativo}: ${error.message}`,
       );
     }
   }
