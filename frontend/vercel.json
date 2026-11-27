@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://req-2026-2-t01-duoc-finance.vercel.app/api/:path*"
+    },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
